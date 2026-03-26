@@ -171,20 +171,28 @@
         .playlist-name {
             font-weight: bold;
             font-size: 1.1rem;
+            flex: 1;
         }
 
-        .edit-btn {
+        /* Boutons d'action playlist */
+        .playlist-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .edit-btn, .delete-pl-btn {
             background: none;
             border: none;
             color: var(--text-color);
             font-size: 1.2rem;
             cursor: pointer;
             padding: 5px 10px;
+            border-radius: 50%;
         }
 
-        .edit-btn:hover {
-            color: var(--primary-color);
-        }
+        .edit-btn:hover { color: var(--primary-color); }
+        .delete-pl-btn:hover { color: #ff4d4d; background-color: rgba(255, 255, 255, 0.1); }
+
 
         /* Library Section */
         .library-list {
@@ -213,7 +221,7 @@
             gap: 15px;
             flex: 1;
             cursor: pointer;
-            min-width: 0; /* For text ellipsis */
+            min-width: 0;
         }
 
         .song-icon {
@@ -261,15 +269,12 @@
             transition: opacity 0.2s;
         }
 
-        .move-btn:hover {
-            opacity: 1;
-        }
+        .move-btn:hover { opacity: 1; }
 
         .move-btn img {
             width: 20px;
             height: 20px;
-            /* Invert color to white for dark theme */
-            filter: invert(1); 
+            filter: invert(1);
         }
 
         /* Dropdown Menu */
@@ -435,7 +440,7 @@
 
             <!-- Playlist List -->
             <div id="playlists-container">
-                <h3 class="section-title" onclick="resetView()">Playlists</h3>
+                <h3 class="section-title">Playlists</h3>
                 <ul class="playlist-list" id="playlist-list">
                     <!-- Playlists ici -->
                 </ul>
@@ -484,7 +489,13 @@
         const songStoreName = "songs";
         const playlistStoreName = "playlists";
 
-        // 1. Ouvrir ou Créer la Base de Données (Version 2)
+        // Variables d'état
+        let currentViewPlaylistId = null; 
+        let allSongsCache = [];
+        let allPlaylistsCache = [];
+        let currentPlayingId = null; // Pour suivre quelle chanson joue
+
+        // 1. Ouvrir ou Créer la Base de Données
         const request = indexedDB.open(dbName, 2);
 
         request.onerror = (event) => {
@@ -494,33 +505,28 @@
         request.onsuccess = (event) => {
             db = event.target.result;
             console.log("DB ouverte avec succès");
-            initLibrary(); // Charger tout au démarrage
+            initLibrary();
+            
+            // --- ECOUTEUR AUTOPLAY ---
+            const audioPlayer = document.getElementById('audio-player');
+            audioPlayer.addEventListener('ended', playNextSong);
         };
 
         request.onupgradeneeded = (event) => {
             db = event.target.result;
             
-            // Créer store songs si n'existe pas
             if (!db.objectStoreNames.contains(songStoreName)) {
                 const songStore = db.createObjectStore(songStoreName, { keyPath: 'id', autoIncrement: true });
-                songStore.createIndex('name', 'name', { unique: false });
+                songStore.createIndex('playlistId', 'playlistId', { unique: false });
             }
             
-            // Créer store playlists
             if (!db.objectStoreNames.contains(playlistStoreName)) {
                 const playlistStore = db.createObjectStore(playlistStoreName, { keyPath: 'id', autoIncrement: true });
-                playlistStore.createIndex('name', 'name', { unique: false });
             }
         };
 
-        // --- VARIABLES GLOBALES D'ÉTAT ---
-        let currentViewPlaylistId = null; // null = Bibliothèque générale, ID = Vue playlist spécifique
-        let allSongsCache = [];
-        let allPlaylistsCache = [];
-
         // --- FONCTIONS LOGIQUES ---
 
-        // Basculer entre les sections (Add / Library)
         function showSection(sectionId) {
             document.querySelectorAll('.section').forEach(section => section.classList.remove('active'));
             document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
@@ -532,24 +538,18 @@
             if (sectionId === 'add') buttons[0].classList.add('active');
             if (sectionId === 'library') {
                 buttons[1].classList.add('active');
-                resetView(); // Revenir à la vue générale en cliquant sur Library
+                resetView();
             }
         }
 
-        // Réinitialiser la vue à "Toutes les chansons"
         function resetView() {
             currentViewPlaylistId = null;
             document.getElementById('current-view-title').textContent = "Toutes les chansons";
             document.getElementById('search-input').value = "";
             renderSongs();
-            // Retirer le style actif des playlists
-            document.querySelectorAll('.playlist-item').forEach(el => el.style.backgroundColor = '');
         }
 
-        // Charger toutes les données (Songs & Playlists)
         function initLibrary() {
-            if (!db) return; // Sécurité si DB pas prête
-            
             const transaction = db.transaction([songStoreName, playlistStoreName], 'readonly');
             const songStore = transaction.objectStore(songStoreName);
             const playlistStore = transaction.objectStore(playlistStoreName);
@@ -557,41 +557,25 @@
             const songReq = songStore.getAll();
             const playlistReq = playlistStore.getAll();
 
-            songReq.onsuccess = (e) => {
-                allSongsCache = e.target.result;
-                // Appel direct si l'autre est déjà fini
-                if (playlistReq.readyState === 'done') {
-                     renderAll();
+            songReq.onsuccess = (e) => { allSongsCache = e.target.result; checkReady(); };
+            playlistReq.onsuccess = (e) => { allPlaylistsCache = e.target.result; checkReady(); };
+
+            function checkReady() {
+                if (songReq.readyState === 'done' && playlistReq.readyState === 'done') {
+                    renderPlaylists();
+                    renderSongs();
                 }
-            };
-            playlistReq.onsuccess = (e) => {
-                allPlaylistsCache = e.target.result;
-                 // Appel direct si l'autre est déjà fini
-                if (songReq.readyState === 'done') {
-                    renderAll();
-                }
-            };
-            
-            transaction.oncomplete = () => {
-                // On s'assure que tout est rendu à la fin de la transaction
-                renderAll();
-            };
-        }
-        
-        function renderAll() {
-            renderPlaylists();
-            renderSongs();
+            }
         }
 
         // --- AFFICHAGE ---
 
-        // Afficher les Playlists
         function renderPlaylists() {
             const listContainer = document.getElementById('playlist-list');
             listContainer.innerHTML = '';
 
             if (allPlaylistsCache.length === 0) {
-                listContainer.innerHTML = '<li style="color:var(--text-color); font-size:0.9rem;">Aucune playlist créée.</li>';
+                listContainer.innerHTML = '<li style="color:var(--text-color); font-size:0.9rem; cursor:default;">Aucune playlist créée.</li>';
                 return;
             }
 
@@ -599,38 +583,36 @@
                 const li = document.createElement('li');
                 li.className = 'playlist-item';
                 li.onclick = (e) => {
-                    if(e.target.closest('.edit-btn')) return; // Ne pas ouvrir si on clique sur edit
+                    // Si on clique sur un bouton d'action, on n'ouvre pas la playlist
+                    if(e.target.closest('button')) return; 
                     openPlaylistView(playlist.id, playlist.name);
                 };
 
                 li.innerHTML = `
                     <span class="playlist-name">📁 ${playlist.name}</span>
-                    <button class="edit-btn" onclick="editPlaylistName(${playlist.id}, '${playlist.name.replace(/'/g, "\\'")}')">✏️</button>
+                    <div class="playlist-actions">
+                        <button class="edit-btn" onclick="editPlaylistName(${playlist.id}, '${playlist.name.replace(/'/g, "\\'")}')">✏️</button>
+                        <button class="delete-pl-btn" onclick="deletePlaylist(${playlist.id})">✕</button>
+                    </div>
                 `;
                 listContainer.appendChild(li);
             });
         }
 
-        // Ouvrir une vue Playlist spécifique
         function openPlaylistView(playlistId, playlistName) {
             currentViewPlaylistId = playlistId;
             document.getElementById('current-view-title').textContent = `Playlist : ${playlistName}`;
-            
-            // Highlight visuel (approximatif)
-            document.querySelectorAll('.playlist-item').forEach(el => el.style.backgroundColor = '');
-            
             renderSongs();
         }
 
-        // Afficher les Chansons
         function renderSongs() {
             const listContainer = document.getElementById('song-list');
             const emptyMsg = document.getElementById('empty-msg');
             const searchTerm = document.getElementById('search-input').value.toLowerCase();
 
-            // Filtrer par vue actuelle (Générale ou Playlist)
-            let songs = allSongsCache;
+            let songs = [...allSongsCache]; // Copie
             
+            // Filtrer par vue
             if (currentViewPlaylistId === null) {
                 // Vue Bibliothèque : chansons SANS playlistId
                 songs = songs.filter(s => !s.playlistId);
@@ -657,9 +639,8 @@
                 songs.forEach(song => {
                     const li = document.createElement('li');
                     li.className = 'song-item';
-                    li.dataset.id = song.id; 
-
-                    // Bouton Move : visible seulement si on est dans la vue Bibliothèque
+                    
+                    // Bouton Move visible seulement si on est dans la vue Bibliothèque (hors playlist)
                     const showMoveBtn = currentViewPlaylistId === null;
 
                     li.innerHTML = `
@@ -683,39 +664,26 @@
 
         // --- ACTIONS DB ---
 
-        // Ajout de fichiers (CORRECTION ICI)
         const fileInput = document.getElementById('fileInput');
         fileInput.addEventListener('change', function(event) {
             const files = event.target.files;
             if (files.length > 0) {
-                addSongsToDB(files);
+                Array.from(files).forEach(file => addSongToDB(file));
             }
         });
 
-        function addSongsToDB(files) {
+        function addSongToDB(file) {
             const transaction = db.transaction([songStoreName], 'readwrite');
             const store = transaction.objectStore(songStoreName);
+            const newSong = { name: file.name, data: file, playlistId: null };
             
-            // Ajouter tous les fichiers dans la transaction
-            Array.from(files).forEach(file => {
-                const newSong = { name: file.name, data: file, playlistId: null };
-                store.add(newSong);
-            });
-
-            // IMPORTANT : Rafraîchir l'interface SEULEMENT quand la transaction est terminée
+            store.add(newSong);
             transaction.oncomplete = () => {
                 const statusMsg = document.getElementById('status-msg');
-                statusMsg.textContent = `${files.length} chanson(s) ajoutée(s) avec succès !`;
-                statusMsg.style.color = "#1db954";
+                statusMsg.textContent = `Chanson "${file.name}" ajoutée !`;
                 setTimeout(() => statusMsg.textContent = "", 3000);
-                
                 fileInput.value = '';
-                initLibrary(); // Recharge les données
-            };
-
-            transaction.onerror = (event) => {
-                console.error("Erreur ajout chanson:", event.target.error);
-                alert("Erreur lors de l'ajout.");
+                initLibrary();
             };
         }
 
@@ -728,18 +696,16 @@
 
         // --- LOGIQUE PLAYLISTS ---
 
-        // Ouvrir Modal Création
         function openCreateModal() {
             const modal = document.getElementById('create-modal');
             const songSelectList = document.getElementById('modal-song-list');
             document.getElementById('playlist-name-input').value = '';
             
-            // Lister les chansons disponibles (sans playlist)
             const availableSongs = allSongsCache.filter(s => !s.playlistId);
             
             songSelectList.innerHTML = '';
             if (availableSongs.length === 0) {
-                songSelectList.innerHTML = '<p style="color:var(--text-color); text-align:center;">Aucune chanson disponible (toutes sont dans des playlists).</p>';
+                songSelectList.innerHTML = '<p style="color:var(--text-color); text-align:center;">Aucune chanson disponible.</p>';
             } else {
                 availableSongs.forEach(song => {
                     const div = document.createElement('div');
@@ -759,13 +725,9 @@
             document.getElementById('create-modal').style.display = 'none';
         }
 
-        // Sauvegarder nouvelle playlist + déplacer chansons
         function saveNewPlaylist() {
             const name = document.getElementById('playlist-name-input').value.trim();
-            if (!name) {
-                alert("Veuillez entrer un nom pour la playlist.");
-                return;
-            }
+            if (!name) { alert("Veuillez entrer un nom."); return; }
 
             const checkboxes = document.querySelectorAll('#modal-song-list input[type="checkbox"]:checked');
             const songIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
@@ -783,7 +745,7 @@
                     getReq.onsuccess = (e) => {
                         const song = e.target.result;
                         if (song) {
-                            song.playlistId = newPlaylistId; // MOVE
+                            song.playlistId = newPlaylistId;
                             songStore.put(song);
                         }
                     };
@@ -796,9 +758,41 @@
             };
         }
 
-        // Editer nom playlist
+        // Supprimer Playlist ET ses chansons
+        function deletePlaylist(playlistId) {
+            if(!confirm("Supprimer cette playlist et toutes ses chansons ?")) return;
+
+            const transaction = db.transaction([playlistStoreName, songStoreName], 'readwrite');
+            const playlistStore = transaction.objectStore(playlistStoreName);
+            const songStore = transaction.objectStore(songStoreName);
+
+            // 1. Supprimer l'entrée playlist
+            playlistStore.delete(playlistId);
+
+            // 2. Trouver et supprimer les chansons associées
+            // On utilise un curseur pour parcourir les chansons
+            const request = songStore.openCursor();
+            request.onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (cursor) {
+                    if (cursor.value.playlistId === playlistId) {
+                        cursor.delete(); // Supprimer la chanson
+                    }
+                    cursor.continue();
+                }
+            };
+
+            transaction.oncomplete = () => {
+                // Si on était dans cette playlist, revenir à l'accueil
+                if (currentViewPlaylistId === playlistId) {
+                    resetView();
+                }
+                initLibrary();
+            };
+        }
+
         function editPlaylistName(id, currentName) {
-            const newName = prompt("Nouveau nom pour la playlist:", currentName);
+            const newName = prompt("Nouveau nom:", currentName);
             if (newName && newName.trim() !== "") {
                 const transaction = db.transaction([playlistStoreName], 'readwrite');
                 const store = transaction.objectStore(playlistStoreName);
@@ -812,7 +806,7 @@
             }
         }
 
-        // --- MOVE MENU (Dropdown) ---
+        // --- MOVE MENU ---
         
         function showMoveMenu(event, songId) {
             event.stopPropagation();
@@ -820,7 +814,7 @@
             menu.innerHTML = '';
 
             if (allPlaylistsCache.length === 0) {
-                alert("Pas de playlists"); 
+                alert("Pas de playlists");
                 return;
             }
 
@@ -857,7 +851,7 @@
             
             req.onsuccess = (e) => {
                 const song = e.target.result;
-                song.playlistId = playlistId; 
+                song.playlistId = playlistId;
                 store.put(song);
             };
             
@@ -867,15 +861,17 @@
             };
         }
 
-        // Recherche
         function handleSearch() {
             renderSongs();
         }
 
-        // Lecture Audio
+        // --- LECTURE AUDIO & AUTOPLAY ---
+
         function playSong(id) {
             const song = allSongsCache.find(s => s.id === id);
             if (song) {
+                currentPlayingId = id; // Mémoriser l'ID joué
+                
                 const audioPlayer = document.getElementById('audio-player');
                 const playerBar = document.getElementById('player-bar');
                 const nowPlaying = document.getElementById('now-playing');
@@ -886,6 +882,31 @@
                 
                 nowPlaying.textContent = `Lecture : ${song.name}`;
                 playerBar.classList.add('active');
+            }
+        }
+
+        function playNextSong() {
+            // Trouver la chanson qui vient de finir
+            const currentSong = allSongsCache.find(s => s.id === currentPlayingId);
+            if (!currentSong) return;
+
+            // Déterminer la liste de lecture actuelle (Playlist ou Bibliothèque)
+            let currentList;
+            if (currentSong.playlistId) {
+                // Si la chanson est dans une playlist, on filtre sur cette playlist
+                currentList = allSongsCache.filter(s => s.playlistId === currentSong.playlistId);
+            } else {
+                // Sinon, on filtre sur la bibliothèque (chansons sans playlist)
+                currentList = allSongsCache.filter(s => !s.playlistId);
+            }
+
+            // Trouver l'index de la chanson actuelle dans cette liste
+            const currentIndex = currentList.findIndex(s => s.id === currentPlayingId);
+
+            // S'il y a une chanson suivante dans la liste
+            if (currentIndex !== -1 && currentIndex < currentList.length - 1) {
+                const nextSong = currentList[currentIndex + 1];
+                playSong(nextSong.id);
             }
         }
     </script>
